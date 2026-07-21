@@ -1,0 +1,65 @@
+# ── Secrets / credentials — NEVER commit these ────────────────────────────
+.env
+.env.local
+.env.production
+.env.*.local
+.dev.vars
+
+# ── Python virtual environments ───────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+.Python
+
+# ── Python cache / bytecode ───────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+.Python
+
+# ── Testing ───────────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+*.egg-info/
+dist/
+build/
+*.egg
+
+# ── Logs ──────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Node / Frontend ───────────────────────────────────────────────────────
+node_modules/
+AETHER\ FRONTEND/AETHER-main/dist/
+AETHER\ FRONTEND/AETHER-main/.output/
+AETHER\ FRONTEND/AETHER-main/.vinxi/
+AETHER\ FRONTEND/AETHER-main/.tanstack/
+AETHER\ FRONTEND/AETHER-main/.nitro/
+AETHER\ FRONTEND/AETHER-main/.wrangler/
+
+# ── IDE / OS ──────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+
+# ── Database dumps / uploads ──────────────────────────────────────────────
+*.sql
+*.dump
+uploads/
+data/
+
+# ── Keep these committed ──────────────────────────────────────────────────
+# .env.example  → committed (with PLACEHOLDER values only — no real keys)
+# requirements.txt, alembic.ini, alembic/  → committed
+# package.json, package-lock.json          → committed
+# README.MD, Dockerfile.backend            → committed

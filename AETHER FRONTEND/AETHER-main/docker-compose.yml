@@ -1,0 +1,153 @@
+
+version: "3.9"
+
+services:
+  # FastAPI Backend
+  backend:
+    build:
+      context: .
+      dockerfile: src/Dockerfile
+    container_name: aether-backend
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://user:password@postgres:5432/aether}
+      NEO4J_URI: ${NEO4J_URI:-bolt://neo4j:7687}
+      NEO4J_USER: ${NEO4J_USER:-neo4j}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-password123}
+      QDRANT_URL: ${QDRANT_URL:-http://qdrant:6333}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      GROQ_API_KEY: ${GROQ_API_KEY}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    depends_on:
+      - neo4j
+      - qdrant
+      - redis
+      - postgres
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - aether-network
+    volumes:
+      - ./src:/app/src:ro
+
+  # Frontend
+  frontend:
+    build:
+      context: "./AETHER FRONTEND/AETHER-main"
+      dockerfile: Dockerfile
+    container_name: aether-frontend
+    ports:
+      - "3000:5173"
+    environment:
+      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000}
+      NODE_ENV: ${NODE_ENV:-development}
+    depends_on:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:5173 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - aether-network
+    volumes:
+      - "./AETHER FRONTEND/AETHER-main/src:/app/src"
+      - "./AETHER FRONTEND/AETHER-main/public:/app/public"
+    command: npm run dev -- --host 0.0.0.0
+
+  # Neo4j Graph Database
+  neo4j:
+    image: neo4j:5-community
+    container_name: aether-neo4j
+    ports:
+      - "7687:7687"
+      - "7474:7474"
+    environment:
+      NEO4J_AUTH: ${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-password123}
+      NEO4J_ACCEPT_LICENSE_AGREEMENT: "yes"
+      NEO4J_server_memory_heap_initial__size: 1G
+      NEO4J_server_memory_heap_max__size: 2G
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    networks:
+      - aether-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:7474 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Qdrant Vector Database
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: aether-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    environment:
+      QDRANT_API_KEY: ${QDRANT_API_KEY}
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - aether-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:6333/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: aether-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-redis_password}
+    volumes:
+      - redis_data:/data
+    networks:
+      - aether-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: aether-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+      POSTGRES_DB: ${POSTGRES_DB:-aether}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - aether-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-user}"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  aether-network:
+    driver: bridge
+
+volumes:
+  neo4j_data:
+  neo4j_logs:
+  qdrant_data:
+  redis_data:
+  postgres_data:

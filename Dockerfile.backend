@@ -1,0 +1,39 @@
+# ── Aether Backend — Production Dockerfile ────────────────────────────────
+# Python 3.11 slim (same version used in development)
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Runtime env — do NOT bake secrets into the image
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1
+
+# System dependencies needed by psycopg2-binary and lxml
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    build-essential \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python deps first (layer-cached when code changes)
+COPY requirements.txt .
+RUN pip install --upgrade pip setuptools wheel && \
+    pip install -r requirements.txt
+
+# Copy application source (secrets are injected at runtime via env vars)
+COPY src/ ./src/
+COPY alembic/ ./alembic/
+COPY alembic.ini .
+
+# Non-root user for security
+RUN adduser --disabled-password --gecos "" appuser && chown -R appuser /app
+USER appuser
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=10s --retries=3 --start-period=40s \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+# Render injects $PORT — fall back to 8000 for Docker/local use
+CMD uvicorn src.api.main:app --host 0.0.0.0 --port ${PORT:-8000}

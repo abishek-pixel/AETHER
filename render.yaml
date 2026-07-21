@@ -1,0 +1,83 @@
+# ============================================================
+# Aether — Render Deployment Configuration
+# https://render.com/docs/render-yaml
+# ============================================================
+services:
+  - type: web
+    name: aether-backend
+    runtime: python
+    region: oregon       # change to your preferred region
+    plan: starter        # upgrade to standard for production load
+
+    # ── Build ──
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+
+    # ── Start ──
+    # Render sets $PORT automatically; uvicorn must bind to 0.0.0.0
+    startCommand: uvicorn src.api.main:app --host 0.0.0.0 --port $PORT
+
+    # ── Health check ──
+    healthCheckPath: /health
+
+    # ── Auto-deploy on push to main ──
+    autoDeploy: true
+
+    # ── Environment variables ──
+    # Set SECRET values in the Render dashboard — do NOT put real values here.
+    envVars:
+      # PostgreSQL — use Render's internal DB URL if provisioning via Render
+      - key: DATABASE_URL
+        sync: false          # must be set manually in the Render dashboard
+
+      # JWT
+      - key: SECRET_KEY
+        generateValue: true  # Render generates a random value automatically
+
+      - key: ACCESS_TOKEN_EXPIRE_MINUTES
+        value: "60"
+      - key: REFRESH_TOKEN_EXPIRE_DAYS
+        value: "30"
+
+      # AI APIs — set manually in Render dashboard
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GOOGLE_API_KEY
+        sync: false
+      - key: TAVILY_API_KEY
+        sync: false
+      - key: SERPER_API_KEY
+        sync: false
+
+      # CORS — set to your Vercel deployment URL after first Vercel deploy
+      - key: FRONTEND_URL
+        sync: false          # e.g. https://aether-xyz.vercel.app
+
+      # Neo4j (optional)
+      - key: NEO4J_URI
+        sync: false
+      - key: NEO4J_USER
+        sync: false
+      - key: NEO4J_PASSWORD
+        sync: false
+
+      # Qdrant (optional)
+      - key: QDRANT_HOST
+        sync: false
+      - key: QDRANT_PORT
+        value: "6333"
+      - key: QDRANT_API_KEY
+        sync: false
+
+      # Redis (optional — not yet used at runtime)
+      - key: REDIS_URL
+        sync: false
+
+      # App limits
+      - key: MAX_ITERATIONS
+        value: "5"
+      - key: COST_LIMIT_PER_SESSION
+        value: "1.0"
+
+      # Runtime flag
+      - key: ENVIRONMENT
+        value: "production"
