@@ -15,7 +15,8 @@ import httpx
 pytestmark = pytest.mark.asyncio
 
 BASE = "http://localhost:8000"
-TIMEOUT = 20.0
+TIMEOUT = 20.0          # default for fast endpoints (auth, rate-limit)
+RESEARCH_TIMEOUT = 90.0  # research POST triggers lazy AI workflow load on first call
 
 # Shared state across tests (populated in setup)
 _state: dict = {}
@@ -44,7 +45,7 @@ async def get_rate_limit(token: str) -> dict:
         r = await c.get(
             f"{BASE}/api/v1/users/me/rate-limit",
             headers={"Authorization": f"Bearer {token}"},
-            timeout=TIMEOUT,
+            timeout=30.0,  # Render DB round-trip
         )
     assert r.status_code == 200, f"rate-limit failed {r.status_code}: {r.text}"
     return r.json()
@@ -57,7 +58,7 @@ async def start_research(token: str, query: str) -> tuple[int, dict]:
             json={"query": query, "depth": "fast",
                   "model": "groq/compound", "max_iterations": 1},
             headers={"Authorization": f"Bearer {token}"},
-            timeout=TIMEOUT,
+            timeout=RESEARCH_TIMEOUT,  # longer — lazy workflow loads on first call
         )
     try:
         body = r.json()
