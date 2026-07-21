@@ -1,6 +1,5 @@
 # ============================================================
 # Aether Backend — Production Dependencies
-# Pinned to tested versions.
 # ============================================================
 
 # ── LangGraph / LangChain ─────────────────────────────────────
@@ -37,23 +36,28 @@ psycopg2-binary==2.9.10
 # ── Authentication ────────────────────────────────────────────
 python-jose[cryptography]==3.3.0
 bcrypt==5.0.0
+# EmailStr in pydantic auth router requires email-validator
+email-validator>=2.1.0,<3.0.0
 
 # ── Utilities ─────────────────────────────────────────────────
-pydantic>=2.9.0,<3.0.0
+pydantic[email]>=2.9.0,<3.0.0
 pydantic-settings>=2.0.0,<3.0.0
 python-dotenv>=1.0.0,<2.0.0
 redis>=5.2.0,<6.0.0
 
-# ── Embeddings (used by EmbeddingService / memory module) ─────
+# ── Embeddings ────────────────────────────────────────────────
+# CPU-only torch prevents Render from pulling 2+ GB of CUDA/GPU packages.
+# sentence-transformers will use this lightweight torch automatically.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.2.2+cpu
 sentence-transformers==5.4.1
 scikit-learn==1.8.0
 
-# ── Document Processing (optional, used by scraper/doc tools) ─
-# Comment out if Render memory is constrained:
+# ── Document Processing ────────────────────────────────────────
 beautifulsoup4>=4.12.0,<5.0.0
 lxml>=4.9.0,<6.0.0
-playwright>=1.48.0,<2.0.0
 
-# ── Heavy dependencies (comment out to reduce Render RAM) ──────
-# pymupdf>=1.24.0,<2.0.0
-# marker-pdf>=0.3.0
+# ── Excluded from production (too heavy / not needed on Render) ─
+# playwright   — browser automation, not needed at runtime
+# pymupdf      — PDF parsing, not needed at runtime
+# marker-pdf   — PDF parsing, not needed at runtime
