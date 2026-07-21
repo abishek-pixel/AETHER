@@ -1,6 +1,11 @@
 """
 Aether Research API — main FastAPI application.
 Integrates PostgreSQL persistence, JWT authentication, and the multi-agent pipeline.
+
+LAZY LOADING: The heavy AI workflow (AetherWorkflow, SentenceTransformer, LangGraph)
+is NOT imported at module level.  It is loaded on first research request so that:
+  - /health responds immediately after process start
+  - Render's 512 MB starter instance doesn't OOM during cold start
 """
 import time
 import json
@@ -16,15 +21,13 @@ from fastapi.responses import StreamingResponse, JSONResponse, Response
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.core.graph import aether_workflow
-from src.core.state import AetherState
+# ── Heavy AI imports are deferred — do NOT import at top level ────────────
+# from src.core.graph import aether_workflow   ← loaded lazily below
+# from src.core.state import AetherState       ← loaded lazily below
+# from src.memory.*                            ← loaded lazily below
+
 from src.core.config import get_settings
 from src.database.session import get_db, init_db
-from src.memory.memory_manager import MemoryManager
-from src.memory.knowledge_graph import KnowledgeGraph
-from src.memory.vector_store import VectorStore
-
-# New routers
 from src.routers.auth import router as auth_router
 from src.routers.sessions import router as sessions_router
 from src.routers.messages import router as messages_router
@@ -133,17 +136,56 @@ async def add_security_headers(request: Request, call_next):
 
 # ── Global state ───────────────────────────────────────────────────────────
 
-memory_manager: Optional[MemoryManager] = None
-knowledge_graph: Optional[KnowledgeGraph] = None
-vector_store: Optional[VectorStore] = None
+memory_manager: Optional[Any] = None
+knowledge_graph: Optional[Any] = None
+vector_store: Optional[Any] = None
 
 # In-process cache: maps backend session_id → response dict for SSE polling
+# NOTE: this is a temporary runtime cache for SSE polling only.
+# All persistent data (sessions, messages, reports) is stored in PostgreSQL.
 research_sessions: Dict[str, Dict[str, Any]] = {}
+
+# ── Lazy AI workflow loader ────────────────────────────────────────────────
+# Heavy imports (LangGraph, SentenceTransformer, all agents) are deferred
+# until the first research request so /health stays lightweight.
+
+_aether_workflow: Optional[Any] = None
+_AetherState: Optional[Any] = None
+_workflow_lock = asyncio.Lock()
+
+
+async def _get_workflow():
+    """Return the compiled AetherWorkflow, loading it on first call."""
+    global _aether_workflow, _AetherState
+    if _aether_workflow is not None:
+        return _aether_workflow, _AetherState
+
+    async with _workflow_lock:
+        # Double-checked locking
+        if _aether_workflow is not None:
+            return _aether_workflow, _AetherState
+
+        logger.info("⏳ Loading AI workflow (first request)…")
+        import importlib
+        graph_mod = importlib.import_module("src.core.graph")
+        state_mod = importlib.import_module("src.core.state")
+        _aether_workflow = graph_mod.aether_workflow
+        _AetherState = state_mod.AetherState
+        logger.info("✅ AI workflow loaded")
+
+    return _aether_workflow, _AetherState
 
 # ── Lifecycle ──────────────────────────────────────────────────────────────
 
 @app.on_event("startup")
 async def startup_event():
+    """
+    Startup sequence designed to keep /health responsive immediately.
+
+    1. PostgreSQL init  — fast (just verifies tables exist)
+    2. Neo4j / Qdrant   — optional, failures are non-fatal
+    3. AI workflow      — NOT loaded here; deferred to first research request
+    """
     global memory_manager, knowledge_graph, vector_store
 
     # ── PostgreSQL ──
@@ -151,32 +193,42 @@ async def startup_event():
         await init_db()
         logger.info("✅ PostgreSQL tables created / verified")
     except Exception as e:
+        # Log but don't crash — DB might be temporarily unavailable.
+        # Requests that need the DB will fail with a proper error.
         logger.error(f"❌ PostgreSQL init failed: {e}")
 
-    # ── Neo4j ──
+    # ── Neo4j (optional) ──
     try:
-        knowledge_graph = KnowledgeGraph(
+        from src.memory.knowledge_graph import KnowledgeGraph as KG
+        kg = KG(
             uri=settings.neo4j_uri,
             user=settings.neo4j_user,
             password=settings.neo4j_password,
         )
-        await knowledge_graph.connect()
+        await kg.connect()
+        knowledge_graph = kg
         logger.info("✅ Neo4j connected")
     except Exception as e:
-        logger.warning(f"⚠️  Neo4j unavailable: {e}")
+        logger.warning(f"⚠️  Neo4j unavailable (optional): {e}")
         knowledge_graph = None
 
-    # ── Qdrant ──
+    # ── Qdrant (optional) ──
     try:
-        vector_store = VectorStore(host=settings.qdrant_host, port=settings.qdrant_port)
-        await vector_store.initialize()
+        from src.memory.vector_store import VectorStore as VS
+        vs = VS(host=settings.qdrant_host, port=settings.qdrant_port)
+        await vs.initialize()
+        vector_store = vs
         logger.info("✅ Qdrant initialized")
     except Exception as e:
-        logger.warning(f"⚠️  Qdrant unavailable: {e}")
+        logger.warning(f"⚠️  Qdrant unavailable (optional): {e}")
         vector_store = None
 
     if knowledge_graph or vector_store:
-        memory_manager = MemoryManager(knowledge_graph, vector_store)
+        from src.memory.memory_manager import MemoryManager as MM
+        memory_manager = MM(knowledge_graph, vector_store)
+
+    # NOTE: AI workflow (LangGraph, SentenceTransformer, agents) is NOT loaded
+    # here — it will be loaded lazily on the first research request.
 
 
 @app.on_event("shutdown")
@@ -366,29 +418,25 @@ class ExportRequest(BaseModel):
 
 @app.get("/health")
 async def health_check():
+    """
+    Lightweight health check — must respond immediately.
+
+    Does NOT:
+      - Load the AI workflow
+      - Connect to Neo4j / Qdrant
+      - Run expensive queries
+
+    Checks PostgreSQL with a simple SELECT 1 (fast, < 1ms on healthy DB).
+    """
     db_status = "unavailable"
     try:
-        async with AsyncSessionLocal() as db:
-            await db.execute(__import__("sqlalchemy").text("SELECT 1"))
+        from src.database.session import AsyncSessionLocal as _sl
+        from sqlalchemy import text
+        async with _sl() as db:
+            await db.execute(text("SELECT 1"))
             db_status = "healthy"
-    except Exception:
-        pass
-
-    neo4j_status = "unavailable"
-    try:
-        if knowledge_graph and knowledge_graph.driver:
-            await knowledge_graph.driver.verify_connectivity()
-            neo4j_status = "healthy"
-    except Exception:
-        pass
-
-    qdrant_status = "unavailable"
-    try:
-        if vector_store and hasattr(vector_store, "client"):
-            vector_store.client.get_collections()
-            qdrant_status = "healthy"
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Health check DB probe failed: {e}")
 
     return {
         "status": "healthy",
@@ -396,8 +444,8 @@ async def health_check():
         "timestamp": datetime.utcnow().isoformat(),
         "uptime": time.time() - START_TIME,
         "postgresql": db_status,
-        "neo4j": neo4j_status,
-        "qdrant": qdrant_status,
+        # Omit Neo4j/Qdrant from basic health — they are optional services
+        "workflow_loaded": _aether_workflow is not None,
     }
 
 
@@ -511,7 +559,10 @@ async def start_research(
     async def _run_workflow():
         t0 = time.time()
         try:
-            initial_state: AetherState = {
+            # Load AI workflow lazily (only on first research request)
+            workflow, AetherState = await _get_workflow()
+
+            initial_state: dict = {
                 "user_query": request.query,
                 "decomposition": None,
                 "research_outputs": [],
@@ -530,7 +581,7 @@ async def start_research(
                 "depth": request.depth,
             }
 
-            result = await aether_workflow.ainvoke(initial_state)
+            result = await workflow.ainvoke(initial_state)
 
             writer_output = result.get("writer_output")
             total_cost = result.get("total_cost", 0.0)
@@ -586,7 +637,7 @@ async def start_research(
                 timeline_events=persisted_timeline,
             )
 
-            # ── Persist findings to Neo4j ──
+            # ── Persist findings to Neo4j (optional) ──
             if memory_manager and result.get("research_outputs"):
                 try:
                     findings = []
@@ -606,7 +657,7 @@ async def start_research(
                             tags=[request.depth, backend_session_id],
                         )
                 except Exception as e:
-                    logger.warning(f"Neo4j persistence failed: {e}")
+                    logger.warning(f"Neo4j persistence failed (non-fatal): {e}")
 
         except Exception as e:
             execution_time = time.time() - t0
@@ -880,7 +931,9 @@ async def follow_up_research(
     async def _run_followup():
         t0 = time.time()
         try:
-            initial_state: AetherState = {
+            workflow, AetherState = await _get_workflow()
+
+            initial_state: dict = {
                 "user_query": request.query,
                 "decomposition": None,
                 "research_outputs": [],
@@ -899,7 +952,7 @@ async def follow_up_research(
                 "depth": request.depth,
             }
 
-            result = await aether_workflow.ainvoke(initial_state)
+            result = await workflow.ainvoke(initial_state)
             writer_output = result.get("writer_output")
             total_cost = result.get("total_cost", 0.0)
             execution_time = time.time() - t0
