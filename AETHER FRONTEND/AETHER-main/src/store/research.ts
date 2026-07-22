@@ -530,32 +530,39 @@ export const useResearchStore = create<ResearchStore>((set, get) => ({
             i === 0 ? { ...b, status: "done", confidence: conf } : b,
           ),
         };
-        const dbSid = (e as any).db_session_id as string | undefined;
-        const targetId = dbSid ?? next.id;
-        setTimeout(() => {
-          // Capture live blocks before DB reload overwrites them
-          const liveBlocks = get().current?.blocks ?? [];
-          get().loadSessionFromDB(targetId).then(() => {
-            // Merge: keep live-streamed timeline/findings/citations for block[0]
-            set((s) => {
-              if (!s.current) return {};
-              const mergedBlocks = s.current.blocks.map((dbBlock) => {
-                const live = liveBlocks.find((lb) => lb.blockIndex === dbBlock.blockIndex);
-                if (!live) return dbBlock;
-                return {
-                  ...dbBlock,
-                  findings:   dbBlock.findings.length   > 0 ? dbBlock.findings   : live.findings,
-                  citations:  dbBlock.citations.length  > 0 ? dbBlock.citations  : live.citations,
-                  timeline:   dbBlock.timeline.length   > 0 ? dbBlock.timeline   : live.timeline,
-                  confidence: dbBlock.confidence        > 0 ? dbBlock.confidence : live.confidence,
-                  report:     dbBlock.report                 ? dbBlock.report     : live.report,
-                };
+        const dbSid = (e as any).db_session_id as string | null | undefined;
+        // Only attempt a DB reload when the backend returned a real db_session_id.
+        // Anonymous users (unauthenticated) never get a db_session_id, so
+        // targetId would be the local crypto.randomUUID() which doesn't exist
+        // in the database — causing "Session not found" 404 errors.
+        if (dbSid) {
+          setTimeout(() => {
+            // Capture live blocks before DB reload overwrites them
+            const liveBlocks = get().current?.blocks ?? [];
+            get().loadSessionFromDB(dbSid).then(() => {
+              // Merge: keep live-streamed timeline/findings/citations for block[0]
+              set((s) => {
+                if (!s.current) return {};
+                const mergedBlocks = s.current.blocks.map((dbBlock) => {
+                  const live = liveBlocks.find((lb) => lb.blockIndex === dbBlock.blockIndex);
+                  if (!live) return dbBlock;
+                  return {
+                    ...dbBlock,
+                    findings:   dbBlock.findings.length   > 0 ? dbBlock.findings   : live.findings,
+                    citations:  dbBlock.citations.length  > 0 ? dbBlock.citations  : live.citations,
+                    timeline:   dbBlock.timeline.length   > 0 ? dbBlock.timeline   : live.timeline,
+                    confidence: dbBlock.confidence        > 0 ? dbBlock.confidence : live.confidence,
+                    report:     dbBlock.report                 ? dbBlock.report     : live.report,
+                  };
+                });
+                return { current: { ...s.current, blocks: mergedBlocks } };
               });
-              return { current: { ...s.current, blocks: mergedBlocks } };
+            }).catch((err) => {
+              console.warn("Failed to load session from DB:", err);
             });
-          }).catch(() => {});
-          get().loadSessionsFromDB().catch(() => {});
-        }, 2000);
+            get().loadSessionsFromDB().catch(() => {});
+          }, 2000);
+        }
         break;
       }
       case "error":

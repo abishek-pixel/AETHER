@@ -660,10 +660,32 @@ async def start_research(
                     logger.warning(f"Neo4j persistence failed (non-fatal): {e}")
 
         except Exception as e:
+            import traceback as _tb
             execution_time = time.time() - t0
-            logger.exception(f"Research workflow failed: {backend_session_id}")
+            # Log the COMPLETE traceback to Render logs for debugging
+            logger.exception(
+                f"❌ Research workflow failed [{backend_session_id}]: "
+                f"{type(e).__name__}: {e}"
+            )
+            # Classify the error for the frontend — never expose raw internals
+            _err_type = type(e).__name__
+            if "torch" in str(e).lower() or "torch" in _err_type.lower():
+                _safe_msg = (
+                    "Research engine initialisation failed (ML dependency error). "
+                    "The research service is restarting — please try again in a moment."
+                )
+            elif isinstance(e, MemoryError) or "memory" in str(e).lower():
+                _safe_msg = (
+                    "Research failed due to insufficient server memory. "
+                    "Please try a shorter query or wait a few minutes."
+                )
+            else:
+                _safe_msg = (
+                    f"Research failed ({_err_type}). "
+                    "Please try again. If the problem persists contact support."
+                )
             research_sessions[backend_session_id]["response"]["status"] = "error"
-            research_sessions[backend_session_id]["response"]["errors"] = [str(e)]
+            research_sessions[backend_session_id]["response"]["errors"] = [_safe_msg]
             research_sessions[backend_session_id]["response"]["execution_time"] = execution_time
             # Update DB session status on failure
             if db_session_id:
@@ -672,8 +694,11 @@ async def start_research(
                         repo = SessionRepository(db)
                         await repo.update_status(db_session_id, "error")
                         await db.commit()
-                except Exception:
-                    pass
+                except Exception as _db_err:
+                    logger.warning(
+                        f"Failed to update session status to 'error' "
+                        f"[{db_session_id}]: {_db_err}"
+                    )
 
     background_tasks.add_task(_run_workflow)
     return placeholder
