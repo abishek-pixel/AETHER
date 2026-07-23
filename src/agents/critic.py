@@ -1,15 +1,14 @@
+"""Critic agent — all langchain imports deferred to __init__."""
+from __future__ import annotations
+
 from typing import Any
 import logging
-from langchain_core.prompts import ChatPromptTemplate
+
 from src.agents.base import BaseAgent
-from src.core.state import AetherState
-from src.schemas.outputs import CriticOutput, CriticFeedback
 
 logger = logging.getLogger(__name__)
 
-
-CRITIC_PROMPT = ChatPromptTemplate.from_messages([
-    ("system", """You are the Critic Agent for Aether, a quality assurance specialist.
+_CRITIC_SYSTEM = """You are the Critic Agent for Aether, a quality assurance specialist.
 
 Your role is to:
 1. Evaluate research findings for logical consistency
@@ -34,21 +33,25 @@ Severity Levels:
 Provide structured feedback for each finding with specific issues and suggestions.
 
 Return only valid JSON that matches the requested structured schema.
-Do not include markdown fences, prose, or commentary outside the JSON object."""),
-    ("human", "Research Findings to Critique:\n{findings}\n\nDecomposition Context:\n{decomposition}")
-])
+Do not include markdown fences, prose, or commentary outside the JSON object."""
 
 
 class CriticAgent(BaseAgent):
     """Agent that critiques research findings for quality and consistency."""
-    
+
     def __init__(self):
         super().__init__(name="critic")
-        self.chain = CRITIC_PROMPT | self._structured_output(CriticOutput)
+        from langchain_core.prompts import ChatPromptTemplate
+        from src.schemas.outputs import CriticOutput
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", _CRITIC_SYSTEM),
+            ("human", "Research Findings to Critique:\n{findings}\n\nDecomposition Context:\n{decomposition}"),
+        ])
+        self.chain = prompt | self._structured_output(CriticOutput)
     
-    async def process(self, state: AetherState) -> dict[str, Any]:
+    async def process(self, state: Any) -> dict[str, Any]:
         """Critique the research outputs."""
-        logger.info("[AGENT] Critic started")
+        logger.info("[AGENT] Critic ENTER")
         try:
             if not state.get("research_outputs"):
                 return {
@@ -74,7 +77,7 @@ class CriticAgent(BaseAgent):
             )
             
             status = "needs_revision" if critical_feedback > 0 else "critique_complete"
-            logger.info(f"[AGENT] Critic completed assessment={critique.overall_assessment}")
+            logger.info(f"[AGENT] Critic EXIT assessment={critique.overall_assessment}")
             return {
                 "critic_output": critique,
                 "status": status,

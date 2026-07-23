@@ -34,12 +34,30 @@ class AetherWorkflow:
         self._END = END
         self._AetherState = _AetherState
 
+        logger.info("[WORKFLOW] Constructing Supervisor...")
         self.supervisor = SupervisorAgent()
+        logger.info("[WORKFLOW] Supervisor constructed")
+
+        logger.info("[WORKFLOW] Constructing Researcher...")
         self.researcher = ResearcherAgent()
+        logger.info("[WORKFLOW] Researcher constructed")
+
+        logger.info("[WORKFLOW] Constructing Critic...")
         self.critic = CriticAgent()
+        logger.info("[WORKFLOW] Critic constructed")
+
+        logger.info("[WORKFLOW] Constructing Verifier...")
         self.verifier = VerifierAgent()
+        logger.info("[WORKFLOW] Verifier constructed")
+
+        logger.info("[WORKFLOW] Constructing FactChecker...")
         self.fact_checker = FactCheckerAgent()
+        logger.info("[WORKFLOW] FactChecker constructed")
+
+        logger.info("[WORKFLOW] Constructing Writer...")
         self.writer = WriterAgent()
+        logger.info("[WORKFLOW] Writer constructed")
+
         self.communication_broker = CommunicationBroker()
         self.cost_tracker = CostTracker()
         
@@ -57,6 +75,7 @@ class AetherWorkflow:
 
         graph = StateGraph(AetherState)
         
+        logger.info("[WORKFLOW] Adding graph nodes...")
         # Add all nodes
         graph.add_node("supervisor", self._supervisor_node)
         graph.add_node("researcher", self._researcher_node)
@@ -67,7 +86,9 @@ class AetherWorkflow:
         graph.add_node("refinement_loop", self._refinement_loop)
         graph.add_node("quality_check", self._quality_assessment)
         graph.add_node("writer", self._writer_node)
-        
+        logger.info("[WORKFLOW] Nodes added")
+
+        logger.info("[WORKFLOW] Adding graph edges...")
         # Define edges with conditional routing
         graph.add_edge(START, "supervisor")
         graph.add_edge("supervisor", "researcher")
@@ -108,22 +129,22 @@ class AetherWorkflow:
         graph.add_edge("refinement_loop", "researcher")
         graph.add_edge("quality_check", "writer")
         graph.add_edge("writer", END)
-        
-        return graph.compile()
+        logger.info("[WORKFLOW] Edges added")
+
+        logger.info("[WORKFLOW] Compiling LangGraph...")
+        compiled = graph.compile()
+        logger.info("[WORKFLOW] Graph compiled")
+        return compiled
     
     async def _supervisor_node(self, state: AetherState) -> dict:
         """Execute supervisor agent."""
+        logger.info("[AGENT] Supervisor ENTER")
         result = await self.supervisor.process(state)
-        
-        # Track cost
         self.cost_tracker.track_agent_execution(
             agent_name="supervisor",
             tokens_used=result.get("token_usage", {})
         )
-        
         decomposition = result.get("decomposition") or state.get("decomposition")
-
-        # Send message to researcher
         if decomposition:
             await self.communication_broker.send_message(
                 sender="supervisor",
@@ -131,21 +152,18 @@ class AetherWorkflow:
                 message_type="task",
                 content={"sub_queries": decomposition.sub_queries}
             )
-        
+        logger.info("[AGENT] Supervisor EXIT")
         return result
-    
+
     async def _researcher_node(self, state: AetherState) -> dict:
         """Execute researcher agent."""
+        logger.info("[AGENT] Researcher ENTER")
         result = await self.researcher.process(state)
-        
         self.cost_tracker.track_agent_execution(
             agent_name="researcher",
             tokens_used=result.get("token_usage", {})
         )
-        
         research_outputs = result.get("research_outputs") or state.get("research_outputs")
-
-        # Send findings to critic
         if research_outputs:
             await self.communication_broker.send_message(
                 sender="researcher",
@@ -153,49 +171,45 @@ class AetherWorkflow:
                 message_type="result",
                 content={"findings_count": len(research_outputs)}
             )
-        
+        logger.info("[AGENT] Researcher EXIT")
         return result
-    
+
     async def _critic_node(self, state: AetherState) -> dict:
         """Execute critic agent."""
+        logger.info("[AGENT] Critic ENTER")
         result = await self.critic.process(state)
-        
         self.cost_tracker.track_agent_execution(
             agent_name="critic",
             tokens_used=result.get("token_usage", {})
         )
-        
+        logger.info("[AGENT] Critic EXIT")
         return result
-    
+
     async def _verification_decision(self, state: AetherState) -> dict:
         """Decide whether verification is needed."""
-        # If research has high confidence, skip verification
         avg_confidence = self._calculate_avg_confidence(state)
-        
-        return {
-            "verification_required": avg_confidence < 0.85
-        }
-    
+        return {"verification_required": avg_confidence < 0.85}
+
     async def _verifier_node(self, state: AetherState) -> dict:
         """Execute verifier agent."""
+        logger.info("[AGENT] Verifier ENTER")
         result = await self.verifier.process(state)
-        
         self.cost_tracker.track_agent_execution(
             agent_name="verifier",
             tokens_used=result.get("token_usage", {})
         )
-        
+        logger.info("[AGENT] Verifier EXIT")
         return result
-    
+
     async def _fact_checker_node(self, state: AetherState) -> dict:
         """Execute fact-checker agent."""
+        logger.info("[AGENT] FactChecker ENTER")
         result = await self.fact_checker.process(state)
-        
         self.cost_tracker.track_agent_execution(
             agent_name="fact_checker",
             tokens_used=result.get("token_usage", {})
         )
-        
+        logger.info("[AGENT] FactChecker EXIT")
         return result
     
     async def _refinement_loop(self, state: AetherState) -> dict:
@@ -261,16 +275,14 @@ class AetherWorkflow:
     
     async def _writer_node(self, state: AetherState) -> dict:
         """Execute writer agent."""
+        logger.info("[AGENT] Writer ENTER")
         result = await self.writer.process(state)
-        
         self.cost_tracker.track_agent_execution(
             agent_name="writer",
             tokens_used=result.get("token_usage", {})
         )
-        
-        # Calculate final metrics
         total_cost = self.cost_tracker.get_total_cost()
-        
+        logger.info("[AGENT] Writer EXIT")
         return {
             **result,
             "total_cost": total_cost,

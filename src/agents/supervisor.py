@@ -1,15 +1,14 @@
+"""Supervisor agent — all langchain imports are deferred to __init__."""
+from __future__ import annotations
+
 from typing import Any
 import logging
-from langchain_core.prompts import ChatPromptTemplate
+
 from src.agents.base import BaseAgent
-from src.core.state import AetherState
-from src.schemas.outputs import QueryDecomposition
 
 logger = logging.getLogger(__name__)
 
-
-SUPERVISOR_PROMPT = ChatPromptTemplate.from_messages([
-    ("system", """You are the Supervisor Agent for Aether, a multi-agent research system.
+_SUPERVISOR_SYSTEM = """You are the Supervisor Agent for Aether, a multi-agent research system.
 
 Your role is to:
 1. Analyze the user's research query
@@ -42,24 +41,29 @@ CRITICAL RULES:
 - "research_type" MUST be exactly one of: factual, analytical, comparative, exploratory.
 - "estimated_complexity" MUST be exactly one of: low, medium, high.
 - Do NOT use alternate keys. Do NOT wrap in markdown fences.
-- Return only the JSON object."""),
-    ("human", "{query}")
-])
+- Return only the JSON object."""
 
 
 class SupervisorAgent(BaseAgent):
     """Supervisor agent that decomposes queries and orchestrates research."""
-    
+
     def __init__(self):
         super().__init__(name="supervisor")
-        self.chain = SUPERVISOR_PROMPT | self._structured_output(QueryDecomposition)
+        # Deferred imports — langchain_core takes ~11 s on cold start
+        from langchain_core.prompts import ChatPromptTemplate
+        from src.schemas.outputs import QueryDecomposition
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", _SUPERVISOR_SYSTEM),
+            ("human", "{query}"),
+        ])
+        self.chain = prompt | self._structured_output(QueryDecomposition)
     
-    async def process(self, state: AetherState) -> dict[str, Any]:
+    async def process(self, state: Any) -> dict[str, Any]:
         """Decompose the user query into sub-tasks."""
-        logger.info("[AGENT] Supervisor started")
+        logger.info("[AGENT] Supervisor ENTER")
         try:
             decomposition = await self.chain.ainvoke({"query": state["user_query"]})
-            logger.info("[AGENT] Supervisor completed")
+            logger.info("[AGENT] Supervisor EXIT")
             return {
                 "decomposition": decomposition,
                 "status": "decomposed",

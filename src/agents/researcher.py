@@ -1,18 +1,15 @@
+"""Researcher agent — all langchain imports deferred to __init__."""
+from __future__ import annotations
+
 from typing import Any
 import logging
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import PydanticOutputParser
-from src.agents.base import BaseAgent
-from src.core.state import AetherState
-from src.schemas.outputs import ResearcherOutput, ResearchFinding
-from src.tools.search import TavilySearch, SerperSearch
 from datetime import datetime
+
+from src.agents.base import BaseAgent
 
 logger = logging.getLogger(__name__)
 
-
-RESEARCHER_PROMPT = ChatPromptTemplate.from_messages([
-    ("system", """You are the Researcher Agent for Aether, a multi-agent research system.
+_RESEARCHER_SYSTEM = """You are the Researcher Agent for Aether, a multi-agent research system.
 
 Your role is to:
 1. Execute thorough research on assigned sub-queries
@@ -45,23 +42,36 @@ You MUST return a JSON object with EXACTLY this structure:
   "sources_consulted": <integer count of sources>
 }}
 
-Return only the JSON object. Do not wrap in markdown fences or add any commentary."""),
-    ("human", "Research sub-query: {sub_query}\n\nContext from previous findings:\n{context}")
-])
+Return only the JSON object. Do not wrap in markdown fences or add any commentary."""
 
 
 class ResearcherAgent(BaseAgent):
     """Agent that conducts research on decomposed sub-queries."""
-    
+
     def __init__(self):
         super().__init__(name="researcher")
-        self.tavily_search = TavilySearch(api_key=self.settings.tavily_api_key)
-        self.serper_search = SerperSearch(api_key=self.settings.serper_api_key)
-        self.chain = RESEARCHER_PROMPT | self._structured_output(ResearcherOutput)
+        from langchain_core.prompts import ChatPromptTemplate
+        from src.schemas.outputs import ResearcherOutput
+        from src.tools.search import TavilySearch, SerperSearch
+        tavily_key = self.settings.tavily_api_key
+        serper_key = self.settings.serper_api_key
+        logger.info(f"[INIT] TAVILY_API_KEY configured: {bool(tavily_key and tavily_key.strip())}")
+        logger.info(f"[INIT] SERPER_API_KEY configured: {bool(serper_key and serper_key.strip())}")
+        logger.info("[INIT] Creating Tavily client...")
+        self.tavily_search = TavilySearch(api_key=tavily_key)
+        logger.info("[INIT] Tavily client created")
+        logger.info("[INIT] Creating Serper client...")
+        self.serper_search = SerperSearch(api_key=serper_key)
+        logger.info("[INIT] Serper client created")
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", _RESEARCHER_SYSTEM),
+            ("human", "Research sub-query: {sub_query}\n\nContext from previous findings:\n{context}"),
+        ])
+        self.chain = prompt | self._structured_output(ResearcherOutput)
     
-    async def process(self, state: AetherState) -> dict[str, Any]:
+    async def process(self, state: Any) -> dict[str, Any]:
         """Research a specific sub-query."""
-        logger.info("[AGENT] Researcher started")
+        logger.info("[AGENT] Researcher ENTER")
         try:
             # Get the next sub-query from decomposition
             if not state.get("decomposition") or not state["decomposition"].sub_queries:
@@ -130,7 +140,7 @@ class ResearcherAgent(BaseAgent):
                     merged[o.sub_query] = o
                 research_outputs = list(merged.values())
 
-            logger.info(f"[AGENT] Researcher completed ({len(research_outputs)} outputs)")
+            logger.info(f"[AGENT] Researcher EXIT ({len(research_outputs)} outputs)")
             return {
                 "research_outputs": research_outputs,
                 "status": "research_complete",

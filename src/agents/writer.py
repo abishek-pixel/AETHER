@@ -1,15 +1,14 @@
+"""Writer agent — all langchain imports deferred to __init__."""
+from __future__ import annotations
+
 from typing import Any
 import logging
-from langchain_core.prompts import ChatPromptTemplate
+
 from src.agents.base import BaseAgent
-from src.core.state import AetherState
-from src.schemas.outputs import WriterOutput
 
 logger = logging.getLogger(__name__)
 
-
-WRITER_PROMPT = ChatPromptTemplate.from_messages([
-    ("system", """You are the Writer Agent for Aether, responsible for synthesizing research into compelling narratives.
+_WRITER_SYSTEM = """You are the Writer Agent for Aether, responsible for synthesizing research into compelling narratives.
 
 Your role is to:
 1. Synthesize findings from all agents into a coherent narrative
@@ -42,27 +41,33 @@ Confidence Assessment:
 - Low (<50): Single sources, unverified claims, or contradictions
 
 Return only valid JSON that matches the requested structured schema.
-Do not include markdown fences, prose, or commentary outside the JSON object."""),
-    ("human", """Research to Synthesize:
-- Original Query: {query}
-- Decomposition: {decomposition}
-- Research Findings: {research_findings}
-- Critic Feedback: {critic_feedback}
-- Verification Results: {verification_results}
-- Fact-Check Results: {fact_check_results}""")
-])
+Do not include markdown fences, prose, or commentary outside the JSON object."""
 
 
 class WriterAgent(BaseAgent):
     """Agent that synthesizes research into final written reports."""
-    
+
     def __init__(self):
         super().__init__(name="writer")
-        self.chain = WRITER_PROMPT | self._structured_output(WriterOutput)
+        from langchain_core.prompts import ChatPromptTemplate
+        from src.schemas.outputs import WriterOutput
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", _WRITER_SYSTEM),
+            ("human", (
+                "Research to Synthesize:\n"
+                "- Original Query: {query}\n"
+                "- Decomposition: {decomposition}\n"
+                "- Research Findings: {research_findings}\n"
+                "- Critic Feedback: {critic_feedback}\n"
+                "- Verification Results: {verification_results}\n"
+                "- Fact-Check Results: {fact_check_results}"
+            )),
+        ])
+        self.chain = prompt | self._structured_output(WriterOutput)
     
-    async def process(self, state: AetherState) -> dict[str, Any]:
+    async def process(self, state: Any) -> dict[str, Any]:
         """Synthesize all research into final output."""
-        logger.info("[AGENT] Writer started")
+        logger.info("[AGENT] Writer ENTER")
         try:
             if not state.get("research_outputs"):
                 return {
@@ -91,7 +96,7 @@ class WriterAgent(BaseAgent):
             # Calculate overall confidence
             overall_confidence = self._calculate_confidence(state)
             writer_output.confidence_score = overall_confidence
-            logger.info(f"[AGENT] Writer completed confidence={overall_confidence:.1f}")
+            logger.info(f"[AGENT] Writer EXIT confidence={overall_confidence:.1f}")
             return {
                 "writer_output": writer_output,
                 # "answer": writer_output.content,

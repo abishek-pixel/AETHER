@@ -1,16 +1,14 @@
+"""Verifier agent — all langchain imports deferred to __init__."""
+from __future__ import annotations
+
 from typing import Any
 import logging
-from langchain_core.prompts import ChatPromptTemplate
+
 from src.agents.base import BaseAgent
-from src.core.state import AetherState
-from src.schemas.outputs import VerifierOutput, VerificationResult
-from src.tools.search import TavilySearch
 
 logger = logging.getLogger(__name__)
 
-
-VERIFIER_PROMPT = ChatPromptTemplate.from_messages([
-    ("system", """You are the Verifier Agent for Aether, specializing in cross-reference validation.
+_VERIFIER_SYSTEM = """You are the Verifier Agent for Aether, specializing in cross-reference validation.
 
 Your role is to:
 1. Cross-reference claims against multiple independent sources
@@ -35,22 +33,29 @@ Consensus Levels:
 Output detailed verification results with cross-reference score (0-100).
 
 Return only valid JSON that matches the requested structured schema.
-Do not include markdown fences, prose, or commentary outside the JSON object."""),
-    ("human", "Claims to Verify:\n{claims}\n\nOriginal Research Sources:\n{research_sources}")
-])
+Do not include markdown fences, prose, or commentary outside the JSON object."""
 
 
 class VerifierAgent(BaseAgent):
     """Agent that verifies claims through cross-referencing."""
-    
+
     def __init__(self):
         super().__init__(name="verifier")
+        from langchain_core.prompts import ChatPromptTemplate
+        from src.schemas.outputs import VerifierOutput
+        from src.tools.search import TavilySearch
+        logger.info("[INIT] Creating Tavily client (verifier)...")
         self.search_tool = TavilySearch(api_key=self.settings.tavily_api_key)
-        self.chain = VERIFIER_PROMPT | self._structured_output(VerifierOutput)
+        logger.info("[INIT] Tavily client created (verifier)")
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", _VERIFIER_SYSTEM),
+            ("human", "Claims to Verify:\n{claims}\n\nOriginal Research Sources:\n{research_sources}"),
+        ])
+        self.chain = prompt | self._structured_output(VerifierOutput)
     
-    async def process(self, state: AetherState) -> dict[str, Any]:
+    async def process(self, state: Any) -> dict[str, Any]:
         """Verify research findings through cross-referencing."""
-        logger.info("[AGENT] Verifier started")
+        logger.info("[AGENT] Verifier ENTER")
         try:
             if not state.get("research_outputs"):
                 return {
@@ -67,7 +72,7 @@ class VerifierAgent(BaseAgent):
             })
             
             status = "verified" if verification.cross_reference_score >= 70 else "partial_verification"
-            logger.info(f"[AGENT] Verifier completed score={verification.cross_reference_score}")
+            logger.info(f"[AGENT] Verifier EXIT score={verification.cross_reference_score}")
             return {
                 "verifier_output": verification,
                 "status": status,
