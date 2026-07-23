@@ -565,7 +565,17 @@ export const useResearchStore = create<ResearchStore>((set, get) => ({
         }
         break;
       }
-      case "error":
+      case "error": {
+        const errMsg: string = (e as any).message ?? "Research failed";
+        // Intentional AbortError (cancelled fetch/timeout) must NOT surface as
+        // a "Research failed" banner — it is a transient cancellation.
+        const isAbort = errMsg.includes("AbortError") ||
+          errMsg.includes("signal is aborted") ||
+          errMsg.includes("aborted without reason");
+        if (isAbort) {
+          console.warn("Suppressing AbortError from error banner:", errMsg);
+          break;
+        }
         next = {
           ...next,
           status: "error",
@@ -573,8 +583,9 @@ export const useResearchStore = create<ResearchStore>((set, get) => ({
             i === 0 ? { ...b, status: "error" } : b,
           ),
         };
-        set({ error: (e as any).message ?? "Research failed" });
+        set({ error: errMsg });
         break;
+      }
       case "status":
         if (e.agent) {
           const updatedAgents = cur.agents.map((a) =>

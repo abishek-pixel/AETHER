@@ -78,22 +78,20 @@ function ResearchPage() {
   useEffect(() => {
     if (!isAuthInitialized) return;
 
-    // Always fetch full session detail from DB when sessionId changes.
-    // This is necessary because loadSessionsFromDB() populates sessions[] from
-    // the LIST endpoint which returns sessions WITHOUT messages. So a session
-    // found in sessions[] may have only 1 block (the summary fallback).
-    // We must always call loadSessionFromDB() to get ALL conversation turns.
-
     // Optimistic: show the in-memory summary immediately while the full fetch runs
     const inMemory = loadSession(sessionId);
 
-    if (current?.id === sessionId && (current?.blocks?.length ?? 0) > 0
-      && current.blocks.every(b => b.status === "done" || b.status === "streaming")) {
-      // Already have a fully-loaded session (e.g. just completed streaming).
-      // Only skip the DB fetch if we know the session came from a full fetch
-      // (i.e. it has messages-derived blocks, detectable by having blockIndex > 0).
-      // We re-fetch anyway to pick up any follow-up blocks that may have been
-      // persisted since the last load.
+    // If the current session is still actively streaming (status idle/running) AND
+    // its ID matches the URL param, don't hit the DB yet — the ID in the URL is
+    // still the local crypto.randomUUID(). useResearchStream will promote to the
+    // backend DB UUID and navigate, causing this effect to re-run with the real ID.
+    const cur = useResearchStore.getState().current;
+    const isActivelyStreaming =
+      cur?.id === sessionId &&
+      (cur.status === "idle" || cur.status === "running");
+    if (isActivelyStreaming) {
+      setIsLoadingFromDB(false);
+      return;
     }
 
     let cancelled = false;
@@ -105,17 +103,25 @@ function ResearchPage() {
       // and the DB write is still in flight).
       for (let i = 0; i < 3; i++) {
         if (cancelled) return;
-        const result = await loadSessionFromDB(sessionId);
-        if (result) {
-          setIsLoadingFromDB(false);
-          return;
+        try {
+          const result = await loadSessionFromDB(sessionId);
+          if (result) {
+            if (!cancelled) setIsLoadingFromDB(false);
+            return;
+          }
+        } catch (err: unknown) {
+          // Intentional cancellation (component unmounted or timeout) — stop silently
+          if (err instanceof DOMException && err.name === "AbortError") {
+            return;
+          }
+          // 404 from server — session may not exist yet (race) or may never exist (anon)
+          // Don't surface as a research failure; fall through to retry / inMemory fallback
         }
         if (i < 2) await new Promise((r) => setTimeout(r, 1500 * (i + 1)));
       }
       if (!cancelled) {
-        // After retries: if we have an in-memory summary, stay on that rather
-        // than showing 404 (the session may still be streaming).
         setIsLoadingFromDB(false);
+        // Only show notFound if we have no in-memory session either
         if (!inMemory) setNotFound(true);
       }
     }
@@ -207,7 +213,13 @@ function ResearchPage() {
   }
 
   const streaming = current.status === "running" || !!followUpBackendId;
-  const hasError = current.status === "error" || !!storeError;
+  // AbortErrors are intentional cancellations (timeout, navigation) — not research failures
+  const isAbortError = storeError != null && (
+    storeError.includes("AbortError") ||
+    storeError.includes("signal is aborted") ||
+    storeError.includes("aborted without reason")
+  );
+  const hasError = (current.status === "error" || !!storeError) && !isAbortError;
   const blocks = current.blocks ?? [];
 
   // Build export content from all blocks

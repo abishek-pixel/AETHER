@@ -122,6 +122,14 @@ export function useResearchStream(session: ResearchSession | null, autoStart = t
       })
       .catch((err) => {
         if (!isCurrentSession()) return;
+        // Intentional AbortError (request cancelled because component unmounted
+        // or 30-second timeout fired) — treat as a transient cancellation,
+        // not a research failure.
+        if (err instanceof DOMException && err.name === "AbortError") {
+          console.warn("Research request aborted (likely timeout or navigation):", err.message);
+          ranForRef.current = null;
+          return;
+        }
         const isNetworkError = err?.name === "TypeError" || err?.message?.includes("fetch");
         if (!isNetworkError) {
           setStatus("error");
