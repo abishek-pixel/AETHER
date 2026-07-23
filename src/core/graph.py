@@ -1,21 +1,39 @@
+from __future__ import annotations
+
 import asyncio
-from langgraph.graph import StateGraph, START, END
-from langgraph.types import StreamWriter
-from src.core.state import AetherState
-from src.agents.supervisor import SupervisorAgent
-from src.agents.researcher import ResearcherAgent
-from src.agents.critic import CriticAgent
-from src.agents.verifier import VerifierAgent
-from src.agents.fact_checker import FactCheckerAgent
-from src.agents.writer import WriterAgent
-from src.core.communication import CommunicationBroker
-from src.core.cost_tracker import CostTracker
+import logging
+from typing import TYPE_CHECKING, Any, Dict
+
+if TYPE_CHECKING:
+    from src.core.state import AetherState
+
+logger = logging.getLogger(__name__)
 
 
 class AetherWorkflow:
     """Advanced orchestration for the Aether multi-agent system."""
     
     def __init__(self):
+        # ── Import agents here (inside __init__) so that module-level import of
+        # graph.py does NOT trigger sentence_transformers / torch loading.
+        # All heavy imports are deferred to when create_aether_graph() is
+        # first called (i.e., on the first research request).
+        from src.core.state import AetherState as _AetherState
+        from src.agents.supervisor import SupervisorAgent
+        from src.agents.researcher import ResearcherAgent
+        from src.agents.critic import CriticAgent
+        from src.agents.verifier import VerifierAgent
+        from src.agents.fact_checker import FactCheckerAgent
+        from src.agents.writer import WriterAgent
+        from src.core.communication import CommunicationBroker
+        from src.core.cost_tracker import CostTracker
+        from langgraph.graph import StateGraph, START, END
+
+        self._StateGraph = StateGraph
+        self._START = START
+        self._END = END
+        self._AetherState = _AetherState
+
         self.supervisor = SupervisorAgent()
         self.researcher = ResearcherAgent()
         self.critic = CriticAgent()
@@ -30,9 +48,13 @@ class AetherWorkflow:
                      self.verifier, self.fact_checker, self.writer]:
             agent.communication_broker = self.communication_broker
     
-    def create_graph(self) -> StateGraph:
+    def create_graph(self):
         """Create the advanced Aether workflow graph."""
-        
+        StateGraph = self._StateGraph
+        START = self._START
+        END = self._END
+        AetherState = self._AetherState
+
         graph = StateGraph(AetherState)
         
         # Add all nodes
@@ -323,14 +345,106 @@ class AetherWorkflow:
         return total_confidence / total_findings if total_findings > 0 else 0.0
 
 
-def create_aether_graph() -> StateGraph:
-    """Create and return compiled Aether workflow graph."""
-    workflow = AetherWorkflow()
-    return workflow.create_graph()
+def create_aether_graph():
+    """Create and return a compiled Aether workflow graph.
+
+    This is called lazily (on first research request) so that module import
+    does NOT trigger SentenceTransformer download or agent construction.
+    """
+    logger.info("[WORKFLOW] Starting initialization")
+    try:
+        logger.info("[WORKFLOW] Constructing agents")
+        workflow_instance = AetherWorkflow()
+        logger.info("[WORKFLOW] Agents constructed")
+
+        logger.info("[WORKFLOW] Building LangGraph")
+        compiled = workflow_instance.create_graph()
+        logger.info("[WORKFLOW] LangGraph compiled")
+
+        logger.info("[WORKFLOW] Initialization complete")
+        return compiled
+    except Exception:
+        logger.exception("[WORKFLOW] Initialization FAILED")
+        raise
 
 
-# Singleton instance
-aether_workflow = create_aether_graph()
+# ── Lazy singleton ────────────────────────────────────────────────────────
+# Do NOT call create_aether_graph() at module level.
+# main.py's _get_workflow() calls it on first research request.
+# This prevents SentenceTransformer / LangGraph from being imported during
+# cold-start, which would OOM Render's 512 MB free tier.
 
-# Exposed for test utilities that need direct access to agent instances (e.g. cost_tracker)
-aether_workflow_instance = AetherWorkflow()
+_aether_workflow_cached = None
+_aether_workflow_lock = asyncio.Lock()
+
+
+async def get_aether_workflow():
+    """Return the compiled workflow, building it once on first call."""
+    global _aether_workflow_cached
+    if _aether_workflow_cached is not None:
+        return _aether_workflow_cached
+
+    async with _aether_workflow_lock:
+        if _aether_workflow_cached is not None:
+            return _aether_workflow_cached
+        _aether_workflow_cached = await asyncio.get_event_loop().run_in_executor(
+            None, create_aether_graph
+        )
+        return _aether_workflow_cached
+
+
+# Module-level attribute kept for backward compatibility with test imports.
+# Accessing it calls create_aether_graph() synchronously — only use from sync
+# test code, never from async request handlers.
+class _LazyWorkflow:
+    """Descriptor that builds the workflow on first attribute access."""
+    _value = None
+
+    def __get__(self, obj, objtype=None):
+        if self._value is None:
+            self.__class__._value = create_aether_graph()
+        return self.__class__._value
+
+
+# Expose the same name that main.py already imports via:
+#   graph_mod.aether_workflow
+# main.py's _get_workflow() just does:
+#   _aether_workflow = graph_mod.aether_workflow
+# We make this a property-like lazy object so the compile runs only when
+# accessed, not when the module is imported.
+class _AetherWorkflowProxy:
+    """Proxy that defers graph compilation until first access."""
+    _compiled = None
+
+    def __getattr__(self, name):
+        if self._compiled is None:
+            self.__class__._compiled = create_aether_graph()
+        return getattr(self.__class__._compiled, name)
+
+    # Support direct call: workflow.ainvoke(...)
+    def __call__(self, *args, **kwargs):
+        if self._compiled is None:
+            self.__class__._compiled = create_aether_graph()
+        return self.__class__._compiled(*args, **kwargs)
+
+    # Support await workflow.ainvoke(...)
+    def ainvoke(self, *args, **kwargs):
+        if self._compiled is None:
+            self.__class__._compiled = create_aether_graph()
+        return self.__class__._compiled.ainvoke(*args, **kwargs)
+
+    def astream(self, *args, **kwargs):
+        if self._compiled is None:
+            self.__class__._compiled = create_aether_graph()
+        return self.__class__._compiled.astream(*args, **kwargs)
+
+    def invoke(self, *args, **kwargs):
+        if self._compiled is None:
+            self.__class__._compiled = create_aether_graph()
+        return self.__class__._compiled.invoke(*args, **kwargs)
+
+
+aether_workflow = _AetherWorkflowProxy()
+
+# Exposed for test utilities
+aether_workflow_instance = None  # populated lazily if needed

@@ -155,7 +155,13 @@ _workflow_lock = asyncio.Lock()
 
 
 async def _get_workflow():
-    """Return the compiled AetherWorkflow, loading it on first call."""
+    """Return the compiled AetherWorkflow, loading it on first call.
+
+    The graph is compiled via run_in_executor so the blocking SentenceTransformer
+    download / LangGraph compile does NOT block the async event loop.
+    A 120-second build timeout is enforced so cold-start hangs surface as errors
+    instead of invisible deadlocks.
+    """
     global _aether_workflow, _AetherState
     if _aether_workflow is not None:
         return _aether_workflow, _AetherState
@@ -166,14 +172,84 @@ async def _get_workflow():
             return _aether_workflow, _AetherState
 
         logger.info("⏳ Loading AI workflow (first request)…")
-        import importlib
-        graph_mod = importlib.import_module("src.core.graph")
-        state_mod = importlib.import_module("src.core.state")
-        _aether_workflow = graph_mod.aether_workflow
-        _AetherState = state_mod.AetherState
-        logger.info("✅ AI workflow loaded")
+        logger.info("[WORKFLOW] Starting initialization")
+
+        # ── Env-var sanity check before spending time on graph compile ────
+        _check_required_env_vars()
+
+        # ── Compile the graph in a thread pool so we don't block the loop ─
+        # create_aether_graph() calls AetherWorkflow() which instantiates all
+        # agents and may trigger SentenceTransformer download (~90 MB).
+        try:
+            logger.info("[WORKFLOW] Importing graph module")
+
+            loop = asyncio.get_event_loop()
+
+            def _build():
+                # Importing graph.py is now cheap (no top-level agent imports).
+                # create_aether_graph() does all the heavy lifting inside AetherWorkflow.__init__
+                from src.core.graph import create_aether_graph
+                from src.core.state import AetherState as _AetherState
+                compiled = create_aether_graph()
+                return compiled, _AetherState
+
+            logger.info("[WORKFLOW] Building LangGraph (this may take up to 60s on cold start)")
+            compiled_workflow, AetherStateClass = await asyncio.wait_for(
+                loop.run_in_executor(None, _build),
+                timeout=120,
+            )
+            _aether_workflow = compiled_workflow
+            _AetherState = AetherStateClass
+            logger.info("✅ AI workflow loaded")
+            logger.info("[WORKFLOW] Initialization complete")
+
+        except asyncio.TimeoutError:
+            logger.error(
+                "[WORKFLOW] Initialization timed out after 120s — "
+                "likely OOM or blocked model download on Render free tier"
+            )
+            raise RuntimeError(
+                "Workflow initialization timed out. "
+                "The server may be out of memory. Please try again in a moment."
+            )
+        except Exception:
+            logger.exception("[WORKFLOW] Initialization FAILED")
+            raise
 
     return _aether_workflow, _AetherState
+
+
+def _check_required_env_vars() -> None:
+    """Log which required env vars are configured; raise on critical missing ones."""
+    required = {
+        "GROQ_API_KEY": settings.groq_api_key,
+        "DATABASE_URL": settings.database_url,
+        "TAVILY_API_KEY": settings.tavily_api_key,
+        "SERPER_API_KEY": settings.serper_api_key,
+    }
+    optional = {
+        "NEO4J_URI": settings.neo4j_uri,
+        "NEO4J_USER": settings.neo4j_user,
+        "NEO4J_PASSWORD": settings.neo4j_password,
+        "QDRANT_HOST": settings.qdrant_host,
+        "GOOGLE_API_KEY": settings.google_api_key,
+    }
+    missing_required = []
+    for name, value in required.items():
+        configured = bool(value and value.strip() and not value.startswith("REPLACE_") and not value.startswith("gsk_REPLACE"))
+        logger.info(f"[ENV] {name} configured: {configured}")
+        if not configured:
+            missing_required.append(name)
+
+    for name, value in optional.items():
+        configured = bool(value and str(value).strip() and not str(value).startswith("REPLACE_"))
+        logger.info(f"[ENV] {name} configured: {configured} (optional)")
+
+    if missing_required:
+        raise RuntimeError(
+            f"Missing required environment variables: {missing_required}. "
+            "Configure them in the Render dashboard → Environment."
+        )
 
 # ── Lifecycle ──────────────────────────────────────────────────────────────
 
@@ -534,7 +610,7 @@ async def start_research(
                 )
                 await db.commit()
                 db_session_id = uuid.UUID(db_session_dict["id"])
-                logger.info(f"DB session created: {db_session_id}")
+                logger.info(f"[RESEARCH] Session created {db_session_id}")
         except Exception as e:
             logger.error(f"Failed to create DB session: {e}")
 
@@ -559,8 +635,11 @@ async def start_research(
     async def _run_workflow():
         t0 = time.time()
         try:
+            logger.info(f"[RESEARCH] Execution starting session={backend_session_id}")
+
             # Load AI workflow lazily (only on first research request)
             workflow, AetherState = await _get_workflow()
+            logger.info(f"[RESEARCH] Workflow ready session={backend_session_id}")
 
             initial_state: dict = {
                 "user_query": request.query,
@@ -581,12 +660,34 @@ async def start_research(
                 "depth": request.depth,
             }
 
-            result = await workflow.ainvoke(initial_state)
+            # Per-depth execution timeout (seconds)
+            _depth_timeout = {"fast": 120, "balanced": 240, "deep": 360}
+            _invoke_timeout = _depth_timeout.get(request.depth, 240)
+
+            logger.info(
+                f"[RESEARCH] Invoking LangGraph session={backend_session_id} "
+                f"depth={request.depth} timeout={_invoke_timeout}s"
+            )
+            try:
+                result = await asyncio.wait_for(
+                    workflow.ainvoke(initial_state),
+                    timeout=_invoke_timeout,
+                )
+            except asyncio.TimeoutError:
+                raise RuntimeError(
+                    f"Research timed out after {_invoke_timeout}s. "
+                    "Try 'fast' depth or a simpler query."
+                )
 
             writer_output = result.get("writer_output")
             total_cost = result.get("total_cost", 0.0)
             execution_time = time.time() - t0
             workflow_status, workflow_errors = build_workflow_status(result, writer_output)
+
+            logger.info(
+                f"[RESEARCH] LangGraph complete session={backend_session_id} "
+                f"status={workflow_status} time={execution_time:.1f}s"
+            )
 
             completed = ResearchResponse(
                 status=workflow_status,
@@ -620,6 +721,7 @@ async def start_research(
             logger.info(f"Research {backend_session_id} completed in {execution_time:.2f}s")
 
             # ── Persist to PostgreSQL ──
+            logger.info(f"[RESEARCH] Persisting to PostgreSQL session={backend_session_id}")
             # Collect timeline events accumulated during SSE streaming
             persisted_timeline = research_sessions.get(backend_session_id, {}).get("timeline_events", [])
             await _persist_completed_research(
@@ -636,6 +738,7 @@ async def start_research(
                 workflow_status=workflow_status,
                 timeline_events=persisted_timeline,
             )
+            logger.info(f"[RESEARCH] Completed session={backend_session_id}")
 
             # ── Persist findings to Neo4j (optional) ──
             if memory_manager and result.get("research_outputs"):
@@ -725,6 +828,7 @@ async def stream_research(
                 yield f"data: {json.dumps({'type': 'error', 'message': 'Session not found'})}\n\n"
                 return
 
+            logger.info(f"[SSE] Client connected session={session_id}")
             yield f"data: {json.dumps({'type': 'session_start', 'session_id': session_id, 'timestamp': datetime.utcnow().isoformat()})}\n\n"
 
             agent_sequence = [

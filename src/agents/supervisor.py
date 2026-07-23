@@ -1,8 +1,11 @@
 from typing import Any
+import logging
 from langchain_core.prompts import ChatPromptTemplate
 from src.agents.base import BaseAgent
 from src.core.state import AetherState
 from src.schemas.outputs import QueryDecomposition
+
+logger = logging.getLogger(__name__)
 
 
 SUPERVISOR_PROMPT = ChatPromptTemplate.from_messages([
@@ -53,15 +56,17 @@ class SupervisorAgent(BaseAgent):
     
     async def process(self, state: AetherState) -> dict[str, Any]:
         """Decompose the user query into sub-tasks."""
+        logger.info("[AGENT] Supervisor started")
         try:
             decomposition = await self.chain.ainvoke({"query": state["user_query"]})
-            
+            logger.info("[AGENT] Supervisor completed")
             return {
                 "decomposition": decomposition,
                 "status": "decomposed",
                 "current_iteration": 1,
             }
         except Exception as e:
+            logger.exception("[AGENT] Supervisor failed")
             return {
                 "errors": [f"Supervisor error: {str(e)}"],
                 "status": "error",

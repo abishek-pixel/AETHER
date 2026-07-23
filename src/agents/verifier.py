@@ -1,9 +1,12 @@
 from typing import Any
+import logging
 from langchain_core.prompts import ChatPromptTemplate
 from src.agents.base import BaseAgent
 from src.core.state import AetherState
 from src.schemas.outputs import VerifierOutput, VerificationResult
 from src.tools.search import TavilySearch
+
+logger = logging.getLogger(__name__)
 
 
 VERIFIER_PROMPT = ChatPromptTemplate.from_messages([
@@ -47,6 +50,7 @@ class VerifierAgent(BaseAgent):
     
     async def process(self, state: AetherState) -> dict[str, Any]:
         """Verify research findings through cross-referencing."""
+        logger.info("[AGENT] Verifier started")
         try:
             if not state.get("research_outputs"):
                 return {
@@ -54,19 +58,16 @@ class VerifierAgent(BaseAgent):
                     "status": "error",
                 }
             
-            # Extract claims to verify
             claims_to_verify = self._extract_claims(state["research_outputs"])
             research_sources = self._format_research_sources(state["research_outputs"])
             
-            # Generate verification
             verification = await self.chain.ainvoke({
                 "claims": claims_to_verify,
                 "research_sources": research_sources
             })
             
-            # Determine if verification passed
             status = "verified" if verification.cross_reference_score >= 70 else "partial_verification"
-            
+            logger.info(f"[AGENT] Verifier completed score={verification.cross_reference_score}")
             return {
                 "verifier_output": verification,
                 "status": status,
@@ -74,6 +75,7 @@ class VerifierAgent(BaseAgent):
             }
         
         except Exception as e:
+            logger.exception("[AGENT] Verifier failed")
             return {
                 "errors": [f"Verifier error: {str(e)}"],
                 "status": "error",

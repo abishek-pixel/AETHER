@@ -1,8 +1,11 @@
 from typing import Any
+import logging
 from langchain_core.prompts import ChatPromptTemplate
 from src.agents.base import BaseAgent
 from src.core.state import AetherState
 from src.schemas.outputs import CriticOutput, CriticFeedback
+
+logger = logging.getLogger(__name__)
 
 
 CRITIC_PROMPT = ChatPromptTemplate.from_messages([
@@ -45,6 +48,7 @@ class CriticAgent(BaseAgent):
     
     async def process(self, state: AetherState) -> dict[str, Any]:
         """Critique the research outputs."""
+        logger.info("[AGENT] Critic started")
         try:
             if not state.get("research_outputs"):
                 return {
@@ -70,7 +74,7 @@ class CriticAgent(BaseAgent):
             )
             
             status = "needs_revision" if critical_feedback > 0 else "critique_complete"
-            
+            logger.info(f"[AGENT] Critic completed assessment={critique.overall_assessment}")
             return {
                 "critic_output": critique,
                 "status": status,
@@ -78,6 +82,7 @@ class CriticAgent(BaseAgent):
             }
         
         except Exception as e:
+            logger.exception("[AGENT] Critic failed")
             return {
                 "errors": [f"Critic error: {str(e)}"],
                 "status": "error",

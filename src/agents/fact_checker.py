@@ -1,4 +1,6 @@
 from typing import Any
+import asyncio
+import logging
 from langchain_core.prompts import ChatPromptTemplate
 from src.agents.base import BaseAgent
 from src.core.state import AetherState
@@ -6,6 +8,8 @@ from src.schemas.outputs import FactCheckerOutput, CitationCheck
 from src.tools.scraper import WebScraper
 import httpx
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 
 FACT_CHECKER_PROMPT = ChatPromptTemplate.from_messages([
@@ -49,6 +53,7 @@ class FactCheckerAgent(BaseAgent):
     
     async def process(self, state: AetherState) -> dict[str, Any]:
         """Check factual accuracy of research findings."""
+        logger.info("[AGENT] Fact Checker started")
         try:
             if not state.get("research_outputs"):
                 return {
@@ -56,28 +61,23 @@ class FactCheckerAgent(BaseAgent):
                     "status": "error",
                 }
             
-            # Extract citations and claims
             citations = self._extract_citations(state["research_outputs"])
             claims = self._extract_claims_text(state["research_outputs"])
             
-            # Validate each citation
             citation_checks = await self._validate_citations(citations)
             
-            # Generate fact-checking report
             fact_check = await self.chain.ainvoke({
                 "citations": self._format_citations(citations),
                 "claims": claims
             })
             
-            # Update with actual validation results
             fact_check.citation_checks = citation_checks
             
-            # Calculate accuracy score
             accuracy_score = self._calculate_accuracy_score(citation_checks)
             fact_check.factual_accuracy_score = accuracy_score
             
             status = "fact_checked" if accuracy_score >= 80 else "fact_check_issues"
-            
+            logger.info(f"[AGENT] Fact Checker completed accuracy={accuracy_score:.1f}")
             return {
                 "fact_checker_output": fact_check,
                 "status": status,
@@ -85,48 +85,48 @@ class FactCheckerAgent(BaseAgent):
             }
         
         except Exception as e:
+            logger.exception("[AGENT] Fact Checker failed")
             return {
                 "errors": [f"Fact-checker error: {str(e)}"],
                 "status": "error",
             }
     
     async def _validate_citations(self, citations: list) -> list[CitationCheck]:
-        """Validate accessibility and content of citations."""
-        checks = []
-        
-        for url in citations:
+        """Validate accessibility and content of citations.
+
+        Runs all checks concurrently with a per-URL timeout so a single
+        slow/unreachable domain cannot block the entire fact-check step.
+        """
+        async def _check_one(url: str) -> CitationCheck:
             try:
-                # Check if URL is accessible
-                async with httpx.AsyncClient() as client:
-                    response = await client.get(url, timeout=10.0)
-                    is_accessible = response.status_code == 200
-                    
-                    # If accessible, extract content
+                async with httpx.AsyncClient(follow_redirects=True) as client:
+                    response = await client.get(url, timeout=8.0)
+                    is_accessible = response.status_code < 400
                     content_matches = None
                     if is_accessible:
-                        content = response.text[:5000]  # Get first 5000 chars
-                        # In real implementation, use scraper to extract relevant content
-                        content_matches = len(content) > 100  # Simple heuristic
-                    
-                    # Assess credibility based on domain
+                        content_matches = len(response.text) > 100
                     credibility = self._assess_credibility(url)
-                    
-                    check = CitationCheck(
+                    return CitationCheck(
                         citation_url=url,
                         is_accessible=is_accessible,
                         content_matches_claim=content_matches,
                         source_credibility=credibility,
                     )
-                    checks.append(check)
-            
-            except Exception as e:
-                checks.append(CitationCheck(
+            except Exception:
+                return CitationCheck(
                     citation_url=url,
                     is_accessible=False,
                     content_matches_claim=False,
                     source_credibility="unknown",
-                ))
-        
+                )
+
+        # Cap concurrent checks to avoid overwhelming Render's outbound connections
+        MAX_CONCURRENT = 5
+        checks: list[CitationCheck] = []
+        for i in range(0, len(citations), MAX_CONCURRENT):
+            batch = citations[i : i + MAX_CONCURRENT]
+            batch_results = await asyncio.gather(*[_check_one(url) for url in batch])
+            checks.extend(batch_results)
         return checks
     
     def _assess_credibility(self, url: str) -> str:

@@ -1,8 +1,11 @@
 from typing import Any
+import logging
 from langchain_core.prompts import ChatPromptTemplate
 from src.agents.base import BaseAgent
 from src.core.state import AetherState
 from src.schemas.outputs import WriterOutput
+
+logger = logging.getLogger(__name__)
 
 
 WRITER_PROMPT = ChatPromptTemplate.from_messages([
@@ -59,8 +62,8 @@ class WriterAgent(BaseAgent):
     
     async def process(self, state: AetherState) -> dict[str, Any]:
         """Synthesize all research into final output."""
+        logger.info("[AGENT] Writer started")
         try:
-            # Check all prerequisites
             if not state.get("research_outputs"):
                 return {
                     "errors": ["No research outputs to synthesize"],
@@ -88,7 +91,7 @@ class WriterAgent(BaseAgent):
             # Calculate overall confidence
             overall_confidence = self._calculate_confidence(state)
             writer_output.confidence_score = overall_confidence
-            
+            logger.info(f"[AGENT] Writer completed confidence={overall_confidence:.1f}")
             return {
                 "writer_output": writer_output,
                 # "answer": writer_output.content,
@@ -97,6 +100,7 @@ class WriterAgent(BaseAgent):
             }
         
         except Exception as e:
+            logger.exception("[AGENT] Writer failed")
             return {
                 "errors": [f"Writer error: {str(e)}"],
                 "status": "error",

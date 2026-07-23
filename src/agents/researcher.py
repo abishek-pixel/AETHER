@@ -1,4 +1,5 @@
 from typing import Any
+import logging
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import PydanticOutputParser
 from src.agents.base import BaseAgent
@@ -6,6 +7,8 @@ from src.core.state import AetherState
 from src.schemas.outputs import ResearcherOutput, ResearchFinding
 from src.tools.search import TavilySearch, SerperSearch
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 
 RESEARCHER_PROMPT = ChatPromptTemplate.from_messages([
@@ -58,6 +61,7 @@ class ResearcherAgent(BaseAgent):
     
     async def process(self, state: AetherState) -> dict[str, Any]:
         """Research a specific sub-query."""
+        logger.info("[AGENT] Researcher started")
         try:
             # Get the next sub-query from decomposition
             if not state.get("decomposition") or not state["decomposition"].sub_queries:
@@ -126,12 +130,14 @@ class ResearcherAgent(BaseAgent):
                     merged[o.sub_query] = o
                 research_outputs = list(merged.values())
 
+            logger.info(f"[AGENT] Researcher completed ({len(research_outputs)} outputs)")
             return {
                 "research_outputs": research_outputs,
                 "status": "research_complete",
             }
 
         except Exception as e:
+            logger.exception("[AGENT] Researcher failed")
             return {
                 "errors": [f"Researcher error: {str(e)}"],
                 "status": "error",
