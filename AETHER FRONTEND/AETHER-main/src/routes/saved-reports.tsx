@@ -23,8 +23,8 @@ function SavedReportsPage() {
     if (user) loadSessionsFromDB();
   }, [user]);
 
-  // Only show sessions that have a report
-  const saved = sessions.filter((s) => s.status === "done" && s.report);
+  // Only show sessions that have a report — and only for authenticated users.
+  const saved = user ? sessions.filter((s) => s.status === "done" && s.report) : [];
 
   return (
     <AppShell title="Saved Reports">

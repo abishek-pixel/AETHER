@@ -39,7 +39,9 @@ function AnalyticsPage() {
       .finally(() => setIsLoading(false));
   }, [user]);
 
-  const completedSessions = sessions.filter((s) => s.status === "done");
+  const completedSessions = user
+    ? sessions.filter((s) => s.status === "done")
+    : [];
   const avgConf = completedSessions.length
     ? Math.round((completedSessions.reduce((a, s) => a + s.confidence, 0) / completedSessions.length) * 100)
     : 0;

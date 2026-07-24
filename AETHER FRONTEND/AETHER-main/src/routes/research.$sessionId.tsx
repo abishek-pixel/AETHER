@@ -94,6 +94,19 @@ function ResearchPage() {
       return;
     }
 
+    // ── Guest users: never try to load from DB ──────────────────────────────
+    // Authenticated sessions are stored in PostgreSQL and can be reloaded.
+    // Guest sessions are ephemeral (no DB row) — the backend would return 401.
+    // If a guest refreshes a research URL and the in-memory state is gone,
+    // show "not found" gracefully rather than spamming 401s.
+    if (!user) {
+      setIsLoadingFromDB(false);
+      if (!inMemory) {
+        setNotFound(true);
+      }
+      return;
+    }
+
     let cancelled = false;
     setIsLoadingFromDB(true);
     setNotFound(false);
@@ -110,28 +123,33 @@ function ResearchPage() {
             return;
           }
         } catch (err: unknown) {
-          // Intentional cancellation (component unmounted or timeout) — stop silently
-          if (err instanceof DOMException && err.name === "AbortError") {
+          // Intentional cancellation — stop silently
+          if (err instanceof DOMException && err.name === "AbortError") return;
+          // 401 Unauthorized — token expired or user mismatch; treat as not found
+          // 404 Not Found — session belongs to different user or doesn't exist
+          // In both cases stop retrying immediately
+          const status = (err as any)?.status;
+          if (status === 401 || status === 404 || status === 403) {
+            if (!cancelled) {
+              setIsLoadingFromDB(false);
+              if (!inMemory) setNotFound(true);
+            }
             return;
           }
-          // 404 from server — session may not exist yet (race) or may never exist (anon)
-          // Don't surface as a research failure; fall through to retry / inMemory fallback
+          // Other errors (network) — fall through to retry
         }
         if (i < 2) await new Promise((r) => setTimeout(r, 1500 * (i + 1)));
       }
       if (!cancelled) {
         setIsLoadingFromDB(false);
-        // Only show notFound if we have no in-memory session either
         if (!inMemory) setNotFound(true);
       }
     }
 
     fetchFull();
     return () => { cancelled = true; };
-    // Re-run whenever sessionId or auth state changes. Do NOT add `current` to
-    // deps — that would cause an infinite re-fetch loop.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, isAuthInitialized]);
+  }, [sessionId, isAuthInitialized, user]);
 
   // ── Start SSE for new (idle) sessions ────────────────────────────────────
   useResearchStream(current);
@@ -192,10 +210,12 @@ function ResearchPage() {
       <AppShell title="Not found">
         <div className="p-6 space-y-3">
           <p className="text-sm text-muted-foreground">
-            Session not found or you don't have access to it.
+            {user
+              ? "Session not found or you don't have access to it."
+              : "This research session is no longer available. Guest sessions are temporary and are not saved after you leave or refresh."}
           </p>
           <Button variant="outline" size="sm" onClick={() => navigate({ to: "/dashboard" })}>
-            Back to Dashboard
+            {user ? "Back to Dashboard" : "Start new research"}
           </Button>
         </div>
       </AppShell>

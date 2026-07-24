@@ -29,8 +29,11 @@ function DashboardPage() {
     if (user) loadSessionsFromDB();
   }, [user]);
 
-  // Only show completed sessions on the dashboard
-  const completedSessions = sessions.filter((s) => s.status === "done");
+  // Only show completed sessions on the dashboard — and only for authenticated users.
+  // Guests must see an empty state, never a previous user's or previous guest's sessions.
+  const completedSessions = user
+    ? sessions.filter((s) => s.status === "done")
+    : [];
 
   return (
     <AppShell title="Dashboard">

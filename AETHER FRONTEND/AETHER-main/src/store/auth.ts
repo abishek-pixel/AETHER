@@ -150,6 +150,14 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
       const user = await profileRes.json();
 
       set({ user, accessToken: data.access_token, refreshToken: data.refresh_token, isLoading: false });
+
+      // Clear any in-memory guest sessions so they never appear in this
+      // authenticated user's dashboard.
+      try {
+        const { useResearchStore } = await import("@/store/research");
+        useResearchStore.getState().clearGuestSessions();
+      } catch { /* ignore */ }
+
       bc?.postMessage({ type: "login" });
     } catch (err) {
       set({ isLoading: false });
@@ -181,6 +189,14 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
       const user = await profileRes.json();
 
       set({ user, accessToken: data.access_token, refreshToken: data.refresh_token, isLoading: false });
+
+      // Clear any in-memory guest sessions so they never appear in this
+      // newly-registered user's dashboard.
+      try {
+        const { useResearchStore } = await import("@/store/research");
+        useResearchStore.getState().clearGuestSessions();
+      } catch { /* ignore */ }
+
       bc?.postMessage({ type: "login" });
     } catch (err) {
       set({ isLoading: false });

@@ -78,24 +78,34 @@ function RootShell({ children }: { children: React.ReactNode }) {
 /**
  * AppInitializer — runs once on mount:
  * 1. Restores auth from localStorage (calls /auth/me to validate)
- * 2. If authenticated, loads session history from PostgreSQL
- * 3. Sets up multi-tab sync via BroadcastChannel
+ * 2. If authenticated: clears any guest session state, then loads session history
+ * 3. If not authenticated: clears any leftover session state (from prev logout)
+ * 4. Sets up multi-tab sync via BroadcastChannel
  */
 function AppInitializer() {
   const initialize = useAuthStore((s) => s.initialize);
   const isInitialized = useAuthStore((s) => s.isInitialized);
   const user = useAuthStore((s) => s.user);
   const loadSessionsFromDB = useResearchStore((s) => s.loadSessionsFromDB);
+  const clearGuestSessions = useResearchStore((s) => s.clearGuestSessions);
 
   // Step 1: validate stored token on mount
   useEffect(() => {
     initialize();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Step 2: only load sessions after auth is confirmed — prevents 401 on refresh
+  // Step 2: after auth resolves, sync session state
   useEffect(() => {
-    if (isInitialized && user) {
+    if (!isInitialized) return;
+    if (user) {
+      // Authenticated: clear any guest sessions accumulated before login,
+      // then fetch the authoritative server-side history for this user.
+      clearGuestSessions();
       loadSessionsFromDB();
+    } else {
+      // Not authenticated: ensure no stale authenticated sessions are visible.
+      // clearGuestSessions() keeps only actively-streaming sessions (safe).
+      clearGuestSessions();
     }
   }, [isInitialized, user]); // eslint-disable-line react-hooks/exhaustive-deps
 
