@@ -1,11 +1,6 @@
-from __future__ import annotations
-
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Any, Dict
-
-if TYPE_CHECKING:
-    from src.core.state import AetherState
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -136,7 +131,7 @@ class AetherWorkflow:
         logger.info("[WORKFLOW] Graph compiled")
         return compiled
     
-    async def _supervisor_node(self, state: AetherState) -> dict:
+    async def _supervisor_node(self, state: Any) -> dict:
         """Execute supervisor agent."""
         logger.info("[AGENT] Supervisor ENTER")
         result = await self.supervisor.process(state)
@@ -155,7 +150,7 @@ class AetherWorkflow:
         logger.info("[AGENT] Supervisor EXIT")
         return result
 
-    async def _researcher_node(self, state: AetherState) -> dict:
+    async def _researcher_node(self, state: Any) -> dict:
         """Execute researcher agent."""
         logger.info("[AGENT] Researcher ENTER")
         result = await self.researcher.process(state)
@@ -174,7 +169,7 @@ class AetherWorkflow:
         logger.info("[AGENT] Researcher EXIT")
         return result
 
-    async def _critic_node(self, state: AetherState) -> dict:
+    async def _critic_node(self, state: Any) -> dict:
         """Execute critic agent."""
         logger.info("[AGENT] Critic ENTER")
         result = await self.critic.process(state)
@@ -185,12 +180,12 @@ class AetherWorkflow:
         logger.info("[AGENT] Critic EXIT")
         return result
 
-    async def _verification_decision(self, state: AetherState) -> dict:
+    async def _verification_decision(self, state: Any) -> dict:
         """Decide whether verification is needed."""
         avg_confidence = self._calculate_avg_confidence(state)
         return {"verification_required": avg_confidence < 0.85}
 
-    async def _verifier_node(self, state: AetherState) -> dict:
+    async def _verifier_node(self, state: Any) -> dict:
         """Execute verifier agent."""
         logger.info("[AGENT] Verifier ENTER")
         result = await self.verifier.process(state)
@@ -201,7 +196,7 @@ class AetherWorkflow:
         logger.info("[AGENT] Verifier EXIT")
         return result
 
-    async def _fact_checker_node(self, state: AetherState) -> dict:
+    async def _fact_checker_node(self, state: Any) -> dict:
         """Execute fact-checker agent."""
         logger.info("[AGENT] FactChecker ENTER")
         result = await self.fact_checker.process(state)
@@ -212,7 +207,7 @@ class AetherWorkflow:
         logger.info("[AGENT] FactChecker EXIT")
         return result
     
-    async def _refinement_loop(self, state: AetherState) -> dict:
+    async def _refinement_loop(self, state: Any) -> dict:
         """Handle iterative refinement of research."""
         current_iteration = state.get("current_iteration", 0)
         max_iterations = state.get("max_iterations", 5)
@@ -241,7 +236,7 @@ class AetherWorkflow:
             "status": "refining",
         }
     
-    async def _quality_assessment(self, state: AetherState) -> dict:
+    async def _quality_assessment(self, state: Any) -> dict:
         """Assess overall quality before final writing."""
         
         scores = {}
@@ -273,7 +268,7 @@ class AetherWorkflow:
         
         return {"overall_quality": 0.5, "quality_status": "unknown"}
     
-    async def _writer_node(self, state: AetherState) -> dict:
+    async def _writer_node(self, state: Any) -> dict:
         """Execute writer agent."""
         logger.info("[AGENT] Writer ENTER")
         result = await self.writer.process(state)
@@ -289,7 +284,7 @@ class AetherWorkflow:
             "cost_breakdown": self.cost_tracker.get_cost_breakdown(),
         }
     
-    def _route_after_critique(self, state: AetherState) -> str:
+    def _route_after_critique(self, state: Any) -> str:
         """Route based on critique assessment.
         
         Only send back for refinement on truly critical issues AND only if
@@ -311,7 +306,7 @@ class AetherWorkflow:
 
         return "proceed"
 
-    def _route_verification(self, state: AetherState) -> str:
+    def _route_verification(self, state: Any) -> str:
         """Route based on whether verification is needed."""
         avg_confidence = self._calculate_avg_confidence(state)
 
@@ -321,7 +316,7 @@ class AetherWorkflow:
 
         return "verify"
 
-    def _route_after_fact_check(self, state: AetherState) -> str:
+    def _route_after_fact_check(self, state: Any) -> str:
         """Route based on fact-check results.
         
         Only refine if accuracy is very poor AND we haven't hit max iterations.
@@ -341,7 +336,7 @@ class AetherWorkflow:
         
         return "quality_check"
     
-    def _calculate_avg_confidence(self, state: AetherState) -> float:
+    def _calculate_avg_confidence(self, state: Any) -> float:
         """Calculate average confidence across findings."""
         if not state.get("research_outputs"):
             return 0.0

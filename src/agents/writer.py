@@ -175,7 +175,7 @@ class WriterAgent(BaseAgent):
         
         return formatted
     
-    def _calculate_confidence(self, state: AetherState) -> float:
+    def _calculate_confidence(self, state: Any) -> float:
         """Calculate overall confidence score."""
         scores = []
         

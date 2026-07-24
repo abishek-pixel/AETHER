@@ -359,3 +359,165 @@ class TestEnvVarCheck:
         finally:
             main_mod.settings = original_settings
 
+
+
+# ---------------------------------------------------------------------------
+# Test 6 — NameError regression: graph must compile without AetherState error
+# ---------------------------------------------------------------------------
+
+class TestNameErrorRegression:
+    """
+    Regression test for the production NameError:
+      NameError: name 'AetherState' is not defined
+
+    Root cause: graph.py used `from __future__ import annotations` which made
+    ALL annotations lazy strings.  LangGraph calls typing.get_type_hints() on
+    routing functions (_route_after_critique etc.) to infer their input schema.
+    get_type_hints() tried to resolve the lazy string "AetherState" back to a
+    type at runtime — but AetherState was only in TYPE_CHECKING, not available
+    at runtime, so it raised NameError inside graph.compile().
+
+    Fix: removed `from __future__ import annotations` from graph.py and
+    replaced all `state: AetherState` annotations with `state: Any`.
+    """
+
+    def test_create_aether_graph_no_name_error(self):
+        """
+        create_aether_graph() must not raise NameError.
+        This directly reproduces the production failure.
+        """
+        try:
+            from src.core.graph import create_aether_graph
+            workflow = create_aether_graph()
+            # Compiled graph must have ainvoke callable
+            assert hasattr(workflow, "ainvoke"), (
+                "Compiled graph must expose ainvoke()"
+            )
+        except NameError as e:
+            pytest.fail(
+                f"NameError during graph compilation — regression detected!\n"
+                f"  {type(e).__name__}: {e}\n"
+                f"  This is the production bug: AetherState (or similar) is "
+                f"referenced at runtime but not available outside TYPE_CHECKING."
+            )
+
+    def test_routing_functions_have_no_undefined_annotations(self):
+        """
+        LangGraph calls get_type_hints() on routing functions.
+        All type annotations in those functions must be resolvable at runtime.
+        """
+        import typing
+        from src.core.graph import AetherWorkflow
+
+        # Instantiate with real settings (LLM client not called — just constructed)
+        wf = AetherWorkflow()
+
+        routing_fns = [
+            wf._route_after_critique,
+            wf._route_verification,
+            wf._route_after_fact_check,
+        ]
+        for fn in routing_fns:
+            try:
+                hints = typing.get_type_hints(fn)
+                # If we get here without NameError, the annotation is resolvable
+            except NameError as e:
+                pytest.fail(
+                    f"get_type_hints({fn.__name__}) raised NameError: {e}\n"
+                    f"LangGraph calls this during graph.compile() — this would "
+                    f"cause the production NameError."
+                )
+
+    def test_guest_research_no_name_error_with_mocks(self):
+        """
+        Full guest research POST + workflow execution must not hit NameError.
+        Mocks all external APIs so no real keys are needed.
+        """
+        import json
+        from fastapi.testclient import TestClient
+        from unittest.mock import patch, AsyncMock, MagicMock
+
+        supervisor_json = json.dumps({
+            "original_query": "tell me about ai",
+            "sub_queries": ["What is AI?"],
+            "research_type": "factual",
+            "estimated_complexity": "low",
+            "priority_order": [0],
+        })
+        researcher_json = json.dumps({
+            "sub_query": "What is AI?",
+            "findings": [{"claim": "AI stands for artificial intelligence.",
+                          "source_url": "https://example.com/ai",
+                          "source_title": "AI Explained",
+                          "confidence": 0.9}],
+            "search_queries_used": ["AI"],
+            "sources_consulted": 1,
+        })
+        critic_json = json.dumps({
+            "overall_assessment": "acceptable",
+            "feedback_items": [], "red_flags": [], "strengths": ["clear"],
+        })
+        verifier_json = json.dumps({
+            "verified_claims": [], "cross_reference_score": 85,
+            "consensus_level": "strong",
+        })
+        fact_checker_json = json.dumps({
+            "citation_checks": [], "factual_accuracy_score": 90,
+            "flagged_claims": [], "recommended_corrections": [],
+        })
+        writer_json = json.dumps({
+            "title": "Artificial Intelligence Overview",
+            "summary": "AI is the simulation of human intelligence.",
+            "main_content": "## What is AI\n\nAI refers to machines mimicking human intelligence.",
+            "key_findings": ["AI is transforming industries"],
+            "citations": ["https://example.com/ai"],
+            "confidence_score": 88,
+            "caveats": [],
+        })
+
+        responses = [supervisor_json, researcher_json, critic_json,
+                     verifier_json, fact_checker_json, writer_json]
+        call_n = {"n": 0}
+
+        async def _mock_ainvoke(self_llm, *args, **kwargs):
+            idx = call_n["n"] % len(responses)
+            call_n["n"] += 1
+            msg = MagicMock()
+            msg.content = responses[idx]
+            return msg
+
+        from src.api.main import app
+
+        with (
+            patch("langchain_groq.ChatGroq.ainvoke", new=_mock_ainvoke),
+            patch("src.tools.search.TavilySearch.search", new_callable=AsyncMock,
+                  return_value=[{"title": "AI", "url": "https://example.com/ai",
+                                 "content": "Artificial intelligence content",
+                                 "relevance_score": 0.95}]),
+            patch("src.tools.search.SerperSearch.search", new_callable=AsyncMock,
+                  return_value=[]),
+            patch("httpx.AsyncClient.get", new_callable=AsyncMock,
+                  return_value=MagicMock(status_code=200, text="content")),
+        ):
+            with TestClient(app, raise_server_exceptions=True) as client:
+                resp = client.post(
+                    "/api/v1/research",
+                    json={"query": "tell me about ai", "depth": "fast",
+                          "max_iterations": 1},
+                )
+
+        assert resp.status_code == 200, f"POST failed: {resp.text}"
+        data = resp.json()
+        assert data["session_id"], "Must return session_id"
+        # After TestClient finishes (bg task ran), status must not be a NameError
+        from src.api.main import research_sessions
+        sess = research_sessions.get(data["session_id"], {})
+        final_errors = sess.get("response", {}).get("errors", [])
+        name_errors = [e for e in final_errors if "NameError" in str(e)]
+        assert not name_errors, (
+            f"NameError found in research session errors: {name_errors}"
+        )
+        final_status = sess.get("response", {}).get("status", "unknown")
+        assert final_status in ("completed", "complete", "done", "error"), (
+            f"Session stuck in '{final_status}' — workflow did not reach terminal state"
+        )
